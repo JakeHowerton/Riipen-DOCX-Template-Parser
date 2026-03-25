@@ -1,6 +1,6 @@
 # TemplateParser.NET
 
-TemplateParser.NET is a beginner-friendly .NET 8 starter repository for a 6-week practicum where you will build a DOCX template parser from scratch.
+TemplateParser.NET is a beginner-friendly .NET 10 starter repository for a 6-week practicum where you will build a DOCX template parser from scratch.
 
 This repo is intentionally scaffolded with almost no parser logic so you can practice designing and implementing it yourself.
 
