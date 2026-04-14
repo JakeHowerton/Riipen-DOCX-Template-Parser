@@ -2,8 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DocumentFormat.OpenXml;
-using DocumentFormat.OpenXml.Packaging;// Needed for WordProcessingDocument.
+using DocumentFormat.OpenXml.Packaging; // Needed for WordProcessingDocument.
 using DocumentFormat.OpenXml.Wordprocessing; // Needed for all Word schema objects (Body, Paragraph, etc.)
 
 // Alias for Drawing to avoid conflicts with Wordprocessing.Drawing
@@ -12,8 +13,83 @@ using Wp = DocumentFormat.OpenXml.Drawing.Wordprocessing;
 
 namespace TemplateParser.Core;
 
+public class HeadingInference
+{
+    public int? Level { get; set; }
+    public Dictionary<string, object> Formatting { get; set; } = new();
+}
+
+public class HeuristicHeadingDetector
+{
+    private const double DefaultFontSize = 11.0;
+
+    public HeadingInference InferHeadingLevel(Paragraph p)
+    {
+        var inference = new HeadingInference();
+        string text = p.InnerText.Trim();
+
+        // Basic filter: if it's empty or way too long, it's just content
+        if (string.IsNullOrWhiteSpace(text) || text.Length > 150) return inference;
+
+        var runs = p.Descendants<Run>().ToList();
+
+        // Signal 1: Font Size
+        double fontSize = GetMaxFontSize(runs);
+
+        // Signal 2: Bold & Italic Weight
+        bool isBold = runs.Any(r =>
+            r.RunProperties?.Bold != null ||
+            r.RunProperties?.RunStyle?.Val?.Value?.Contains("Bold", StringComparison.OrdinalIgnoreCase) == true);
+
+        bool isItalic = runs.Any(r => r.RunProperties?.Italic != null);
+
+        // Signal 3: Numbering Patterns
+        bool hasNumbering = Regex.IsMatch(text, @"^(\d+(\.\d+)*|[A-Z]\.|Section\s\d+)", RegexOptions.IgnoreCase);
+
+        // Signal 4: Spacing
+        var spacing = p.ParagraphProperties?.SpacingBetweenLines;
+        bool hasSpaceBefore = spacing?.Before != null;
+
+        // Populate Formatting Metadata for the Output
+        inference.Formatting["fontSize"] = fontSize;
+        inference.Formatting["isBold"] = isBold;
+        inference.Formatting["isItalic"] = isItalic;
+        inference.Formatting["hasNumbering"] = hasNumbering;
+
+        // Weighted Scoring Logic
+        double score = 0;
+        if (fontSize > DefaultFontSize + 4) score += 3;      // Large font
+        else if (fontSize > DefaultFontSize + 1) score += 1.5; // Med font
+
+        if (isBold) score += 2;
+        if (isItalic) score += 0.5;
+        if (hasNumbering) score += 2.5;
+        if (hasSpaceBefore) score += 1;
+
+        // Inference Thresholds
+        if (score >= 6) inference.Level = 1;      // Section
+        else if (score >= 4) inference.Level = 2; // Subsection
+        else if (score >= 2.5) inference.Level = 3; // Subsubsection
+
+        return inference;
+    }
+
+    private double GetMaxFontSize(IEnumerable<Run> runs)
+    {
+        var sizes = runs.Select(r =>
+        {
+            var sz = r.RunProperties?.FontSize?.Val?.Value;
+            if (sz != null && double.TryParse(sz, out double val)) return val / 2.0;
+            return DefaultFontSize;
+        });
+        return sizes.Any() ? sizes.Max() : DefaultFontSize;
+    }
+}
+
 public sealed class DocxParser
 {
+    private readonly HeuristicHeadingDetector _heuristics = new();
+
     public ParserResult ParseDocxTemplate(string filePath, Guid templateId)
     {
         var nodes = new List<Node>();
@@ -28,12 +104,11 @@ public sealed class DocxParser
 
             // Flattening the structure to process Paragraphs and Tables in sequence
             var elements = body.ChildElements.Where(e => e is Paragraph || e is Table);
-
             List<Paragraph> listBuffer = new();
 
             foreach (var element in elements)
             {
-                // Handle List Grouping: If the current element isn't a list item, flush the buffer
+                // Handle List Grouping: Flush buffer if current element is not a list item
                 if (element is not Paragraph pList || pList.ParagraphProperties?.NumberingProperties == null)
                 {
                     FlushListBuffer(listBuffer, nodes, lastNodesAtLevel, ref globalOrderIndex, templateId);
@@ -57,17 +132,14 @@ public sealed class DocxParser
                     }
 
                     // Standard Text / Heading Processing
-                    string text = p.InnerText.Trim();
-                    if (string.IsNullOrWhiteSpace(text)) continue;
-
-                    nodes.Add(CreateTextOrHeadingNode(p, templateId, ref globalOrderIndex, lastNodesAtLevel));
+                    if (string.IsNullOrWhiteSpace(p.InnerText)) continue;
+                    nodes.Add(ProcessParagraph(p, templateId, ref globalOrderIndex, lastNodesAtLevel));
                 }
                 else if (element is Table table)
                 {
                     nodes.Add(CreateTableNode(table, templateId, ref globalOrderIndex, lastNodesAtLevel));
                 }
             }
-
             // Final flush for trailing lists
             FlushListBuffer(listBuffer, nodes, lastNodesAtLevel, ref globalOrderIndex, templateId);
         }
@@ -75,12 +147,24 @@ public sealed class DocxParser
         return new ParserResult { Nodes = nodes };
     }
 
-    private Node CreateTextOrHeadingNode(Paragraph p, Guid templateId, ref int orderIndex, Dictionary<int, Node> lastNodes)
+    private Node ProcessParagraph(Paragraph p, Guid templateId, ref int orderIndex, Dictionary<int, Node> lastNodes)
     {
         string text = p.InnerText.Trim();
-        string style = p.ParagraphProperties?.ParagraphStyleId?.Val?.Value ?? "Normal";
+        string styleId = p.ParagraphProperties?.ParagraphStyleId?.Val?.Value ?? "";
+
+        // 1. Try Style Detection
         // Deconstruct the tuple from our new helper
-        var (level, type) = GetNodeDetails(style);
+        var (level, type) = GetNodeDetailsFromStyle(styleId);
+
+        // 2. Run Heuristics
+        var inference = _heuristics.InferHeadingLevel(p);
+
+        // Fallback to Heuristics if it's tagged as Content but looks like a Header
+        if (level == 4 && inference.Level.HasValue)
+        {
+            level = inference.Level.Value;
+            type = level switch { 1 => "Section", 2 => "Subsection", _ => "Subsubsection" };
+        }
 
         // Classify Text: Sentence vs Paragraph
         if (type == "Content")
@@ -92,28 +176,38 @@ public sealed class DocxParser
         {
             Id = Guid.NewGuid(),
             TemplateId = templateId,
-            Title = text.Length > 50 ? text.Substring(0, 50) + "..." : text,
+            Title = text.Length > 50 ? text.Substring(0, 47) + "..." : text,
             Type = type,
             OrderIndex = orderIndex++,
             ParentId = level == 1 ? null : FindParentId(level, lastNodes),
-            MetadataJson = "{}" //If the content is anything that is not directly a header,subheader, or content. 
-            // This gets filled in with blank since the properties is just itself and is covered in title.
+            // Formatting signals now show up in MetadataJson
+            MetadataJson = JsonSerializer.Serialize(inference.Formatting) //Formating of bold, underlined, etc.
         };
 
+        // Update tracking and CLEAR lower-level children to maintain hierarchy integrity
         lastNodes[level] = node;
+        for (int i = level + 1; i <= 4; i++)
+        {
+            if (lastNodes.ContainsKey(i)) lastNodes.Remove(i);
+        }
+
         return node;
     }
+
+    private (int Level, string Type) GetNodeDetailsFromStyle(string styleId) => styleId switch
+    {
+        "Heading1" => (1, "Section"),
+        "Heading2" => (2, "Subsection"),
+        "Heading3" => (3, "Subsubsection"),
+        _ => (4, "Content") // Default for Normal text or other styles
+    };
 
     private Node CreateTableNode(Table table, Guid templateId, ref int orderIndex, Dictionary<int, Node> lastNodes)
     {
         var rows = table.Elements<TableRow>();
-        var tableData = new List<List<string>>();
-
-        foreach (var row in rows)
-        {
-            var rowData = row.Elements<TableCell>().Select(c => c.InnerText.Trim()).ToList();
-            tableData.Add(rowData);
-        }
+        var tableData = rows.Select(row =>
+            row.Elements<TableCell>().Select(c => c.InnerText.Trim()).ToList()
+        ).ToList();
 
         return new Node
         {
@@ -130,7 +224,7 @@ public sealed class DocxParser
                 tableData = tableData
             })
             //If the content is anything that is not directly a header,subheader, or content. 
-            // This gets filled in the with properties of the tabel
+            // This gets filled in the with properties of the table
         };
     }
 
@@ -162,7 +256,7 @@ public sealed class DocxParser
         var items = buffer.Select(p => p.InnerText.Trim()).ToList();
         var isNumbered = buffer.First().ParagraphProperties?.NumberingProperties?.NumberingId?.Val != null;
 
-        var listNode = new Node
+        nodes.Add(new Node
         {
             Id = Guid.NewGuid(), // Globally Unique Identifier
             TemplateId = templateId,
@@ -175,22 +269,9 @@ public sealed class DocxParser
                 listType = isNumbered ? "Numbered" : "Bullet",
                 items = items
             })
-        };
+        });
 
-        nodes.Add(listNode);
         buffer.Clear();
-    }
-
-    private (int Level, string Type) GetNodeDetails(string styleId)
-    {
-        return styleId switch
-        {
-            "Heading1" => (1, "Section"),
-            "Heading2" => (2, "Subsection"),
-            "Heading3" => (3, "Subsubsection"),
-            _ => (4, "Content") // Default for Normal text or other styles
-        };
-
     }
 
     private Guid? FindParentId(int currentLevel, Dictionary<int, Node> lastNodes)
@@ -207,7 +288,6 @@ public sealed class DocxParser
 
 
 
-
 //To-Do Section
 // TODO (Week 1-4): Implement core DOCX parsing here.
 // Recommended responsibilities for this method:
@@ -216,10 +296,10 @@ public sealed class DocxParser
 // 2) [Week 2] Build section hierarchy using Word heading styles.
 // (This is what we are working on now within milestone 2)
 // 3) [Week 3] Detect tables, lists, and images as structured content nodes.
+// 4) [Week 4] Add formatting heuristics for files missing heading styles.
 
 //------------------
 
-// 4) [Week 4] Add formatting heuristics for files missing heading styles.
 // 5) [Week 2-4] Create Node instances with:
 //    - Id: new Guide for each node
 //    - TemplateId: the templateId argument
