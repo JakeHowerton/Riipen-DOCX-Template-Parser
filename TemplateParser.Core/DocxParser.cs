@@ -297,9 +297,6 @@ public sealed class DocxParser
 // (This is what we are working on now within milestone 2)
 // 3) [Week 3] Detect tables, lists, and images as structured content nodes.
 // 4) [Week 4] Add formatting heuristics for files missing heading styles.
-
-//------------------
-
 // 5) [Week 2-4] Create Node instances with:
 //    - Id: new Guide for each node
 //    - TemplateId: the templateId argument

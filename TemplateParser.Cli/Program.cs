@@ -1,35 +1,41 @@
 using System.Text.Json;
 using TemplateParser.Core;
 
-const string usage = "Usage: dotnet run -- parse <filePath> <templateId>";
+// Status codes for better CLI integration
+const int Success = 0;
+const int Error = 1;
+
+const string usage = "Usage: dotnet run -- parse <filePath> <templateId> [--out <outputPath>]";
 
 if (args.Length < 3)
 {
     Console.Error.WriteLine(usage);
-    return;
+    return Error;
 }
 
 var command = args[0];
 var filePath = args[1];
 var templateIdArg = args[2];
 
+// 1. Validation: Command check
 if (!string.Equals(command, "parse", StringComparison.OrdinalIgnoreCase))
 {
-    Console.Error.WriteLine("Unsupported command. Only 'parse' is currently available.");
-    Console.Error.WriteLine(usage);
-    return;
+    Console.Error.WriteLine($"Unsupported command '{command}'. Only 'parse' is supported.");
+    return Error;
 }
 
+// 2. Validation: File Existence
 if (!File.Exists(filePath))
 {
-    Console.Error.WriteLine($"File not found: {filePath}");
-    return;
+    Console.Error.WriteLine($"Error: File not found at {filePath}");
+    return Error;
 }
 
+// 3. Validation: GUID format
 if (!Guid.TryParse(templateIdArg, out var templateId))
 {
-    Console.Error.WriteLine($"Invalid templateId GUID: {templateIdArg}");
-    return;
+    Console.Error.WriteLine($"Error: Invalid templateId GUID: {templateIdArg}");
+    return Error;
 }
 
 var parser = new DocxParser();
@@ -38,33 +44,34 @@ try
 {
     var result = parser.ParseDocxTemplate(filePath, templateId);
 
-    var json = JsonSerializer.Serialize(result, new JsonSerializerOptions
+    // Serialization setup: CamelCase and Indented as per contract
+    var options = new JsonSerializerOptions
     {
-        WriteIndented = true
-    });
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    };
 
-    // TODO (Week 5): Wire parser output into a practical CLI workflow.
-    // Suggested improvements:
-    // - [Week 5] Add optional output path flag (example: --out ./expected/result.json)
-    // - [Week 5] Add better error messages with actionable next steps
-    // - [Week 5] Add integration test-friendly output options
-    // - [Week 6] Add structured logging for debugging parse failures
-    // - Keep CLI focused on input/output flow only
-    // Important: actual DOCX parsing should stay in TemplateParser.Core, not here.
-    if (args.Length >= 4 && string.Equals(args[3], "--out", StringComparison.OrdinalIgnoreCase))
+    var json = JsonSerializer.Serialize(result, options);
+
+    // 4. Output Logic: Check for optional --out flag
+    if (args.Length >= 5 && string.Equals(args[3], "--out", StringComparison.OrdinalIgnoreCase))
     {
-        var outputPath = "output.json";
+        var outputPath = args[4];
         File.WriteAllText(outputPath, json);
-        Console.WriteLine($"Wrote parser output to {outputPath}");
+        Console.WriteLine($"Successfully exported results to: {outputPath}");
     }
     else
     {
+        // Default to Standard Output
         Console.WriteLine(json);
     }
+
+    return Success;
 }
-catch (NotImplementedException)
+catch (Exception ex)
 {
-    // TODO (Week 6): Replace this temporary message with robust error handling.
-    // Example: map known parser exceptions to user-friendly console output and exit codes.
-    Console.Error.WriteLine("Parser implementation is intentionally incomplete in this starter repository.");
+    Console.Error.WriteLine("An error occurred during parsing:");
+    Console.Error.WriteLine(ex.Message);
+    return Error;
 }
