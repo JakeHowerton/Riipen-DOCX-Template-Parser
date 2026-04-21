@@ -16,10 +16,9 @@ public sealed class ParserTests
     [Fact]
     public void Integration_FullPipeline_ReturnsValidJsonStructure()
     {
-        // Arrange
+        // Arrange: Use a sample document
         var path = GetTestDocPath("smoke_test.docx");
 
-        // Act
         var result = _parser.ParseDocxTemplate(path, _testTemplateId);
 
         // Assert
@@ -34,6 +33,7 @@ public sealed class ParserTests
         var path = GetTestDocPath("table_sample.docx");
         var result = _parser.ParseDocxTemplate(path, _testTemplateId);
 
+        // Assert: Ensure Table type exists and contains data
         var tableNode = result.Nodes.FirstOrDefault(n => n.Type == "Table");
         Assert.NotNull(tableNode);
         Assert.Contains("rowCount", tableNode.MetadataJson);
@@ -46,6 +46,7 @@ public sealed class ParserTests
         var path = GetTestDocPath("hierarchy_test.docx");
         var result = _parser.ParseDocxTemplate(path, _testTemplateId);
 
+        // Assert: Verify parent-child relationship tracking
         var section = result.Nodes.First(n => n.Type == "Section");
         var subSection = result.Nodes.First(n => n.Type == "Subsection");
 
@@ -58,6 +59,7 @@ public sealed class ParserTests
         var path = GetTestDocPath("list_sample.docx");
         var result = _parser.ParseDocxTemplate(path, _testTemplateId);
 
+        // Assert: Verify list grouping logic
         var listNode = result.Nodes.FirstOrDefault(n => n.Type == "List");
         Assert.NotNull(listNode);
         Assert.Contains("items", listNode.MetadataJson);
@@ -69,18 +71,7 @@ public sealed class ParserTests
         var path = GetTestDocPath("empty.docx");
         var result = _parser.ParseDocxTemplate(path, _testTemplateId);
 
+        // Assert: Ensure no nodes are generated for empty body
         Assert.Empty(result.Nodes);
     }
 }
-
-
-// TODO (Week 1-6): Replace this placeholder with real tests aligned to weekly goals.
-// Suggested first tests:
-// - [Week 1] paragraph extraction smoke tests
-// - [Week 2] heading-based hierarchy tests
-// - [Week 3] table/list/image node detection tests
-// - [Week 4] formatting heuristics tests for missing heading styles
-// - [Week 5] integration tests that run parser through the CLI flow
-// - [Week 6] refactor tests into readable groups and helper builders
-//
-// You may create test helpers/builders to reduce repetition (recommended by Week 6).

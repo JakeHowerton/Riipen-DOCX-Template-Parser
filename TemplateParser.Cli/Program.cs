@@ -7,6 +7,7 @@ const int Error = 1;
 
 const string usage = "Usage: dotnet run -- parse <filePath> <templateId> [--out <outputPath>]";
 
+// Check for minimum required arguments
 if (args.Length < 3)
 {
     Console.Error.WriteLine(usage);
@@ -54,7 +55,7 @@ try
 
     var json = JsonSerializer.Serialize(result, options);
 
-    // 4. Output Logic: Check for optional --out flag
+    // 4. Output Logic: Check output
     if (args.Length >= 5 && string.Equals(args[3], "--out", StringComparison.OrdinalIgnoreCase))
     {
         var outputPath = args[4];
